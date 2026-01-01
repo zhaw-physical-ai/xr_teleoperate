@@ -77,7 +77,9 @@ if __name__ == '__main__':
     parser.add_argument('--input-mode', type=str, choices=['hand', 'controller'], default='hand', help='Select XR device input tracking source')
     parser.add_argument('--display-mode', type=str, choices=['immersive', 'ego', 'pass-through'], default='immersive', help='Select XR device display mode')
     parser.add_argument('--arm', type=str, choices=['G1_29', 'G1_23', 'H1_2', 'H1'], default='G1_29', help='Select arm controller')
-    parser.add_argument('--ee', type=str, choices=['dex1', 'dex3', 'inspire_ftp', 'inspire_dfx', 'brainco'], help='Select end effector controller')
+    parser.add_argument('--ee', type=str, choices=['dex1', 'dex3', 'inspire_ftp', 'inspire_dfx', 'brainco', 'crt'], help='Select end effector controller')
+    parser.add_argument('--left-gripper-port', type=str, default='/dev/ttyACM0', help='Serial port for left CRT gripper')
+    parser.add_argument('--right-gripper-port', type=str, default='/dev/ttyACM1', help='Serial port for right CRT gripper')
     parser.add_argument('--img-server-ip', type=str, default='192.168.123.164', help='IP address of image server, used by teleimager and televuer')
     parser.add_argument('--network-interface', type=str, default=None, help='Network interface for dds communication, e.g., eth0, wlan0. If None, use default interface.')
     # mode flags
@@ -199,8 +201,19 @@ if __name__ == '__main__':
             dual_hand_data_lock = Lock()
             dual_hand_state_array = Array('d', 12, lock = False)   # [output] current left, right hand state(12) data.
             dual_hand_action_array = Array('d', 12, lock = False)  # [output] current left, right hand action(12) data.
-            hand_ctrl = Brainco_Controller(left_hand_pos_array, right_hand_pos_array, dual_hand_data_lock, 
+            hand_ctrl = Brainco_Controller(left_hand_pos_array, right_hand_pos_array, dual_hand_data_lock,
                                            dual_hand_state_array, dual_hand_action_array, simulation_mode=args.sim)
+        elif args.ee == "crt":
+            from teleop.robot_control.robot_hand_crt import CRT_Gripper_Controller
+            left_gripper_value = Value('d', 0.0, lock=True)        # [input]
+            right_gripper_value = Value('d', 0.0, lock=True)       # [input]
+            dual_gripper_data_lock = Lock()
+            dual_gripper_state_array = Array('d', 2, lock=False)   # [output] current left, right gripper state (width in mm)
+            dual_gripper_action_array = Array('d', 2, lock=False)  # [output] current left, right gripper action (target width)
+            gripper_ctrl = CRT_Gripper_Controller(left_gripper_value, right_gripper_value, dual_gripper_data_lock,
+                                                  dual_gripper_state_array, dual_gripper_action_array,
+                                                  left_port=args.left_gripper_port, right_port=args.right_gripper_port,
+                                                  fps=args.frequency, simulation_mode=args.sim)
         else:
             pass
         
@@ -303,6 +316,16 @@ if __name__ == '__main__':
                     left_gripper_value.value = tele_data.left_hand_pinchValue
                 with right_gripper_value.get_lock():
                     right_gripper_value.value = tele_data.right_hand_pinchValue
+            elif args.ee == "crt" and args.input_mode == "controller":
+                with left_gripper_value.get_lock():
+                    left_gripper_value.value = tele_data.left_ctrl_triggerValue
+                with right_gripper_value.get_lock():
+                    right_gripper_value.value = tele_data.right_ctrl_triggerValue
+            elif args.ee == "crt" and args.input_mode == "hand":
+                with left_gripper_value.get_lock():
+                    left_gripper_value.value = tele_data.left_hand_pinchValue
+                with right_gripper_value.get_lock():
+                    right_gripper_value.value = tele_data.right_hand_pinchValue
             else:
                 pass
             
@@ -369,6 +392,24 @@ if __name__ == '__main__':
                         right_hand_action = dual_hand_action_array[-6:]
                         current_body_state = []
                         current_body_action = []
+                elif args.ee == "crt" and args.input_mode == "hand":
+                    with dual_gripper_data_lock:
+                        left_ee_state = [dual_gripper_state_array[0]]
+                        right_ee_state = [dual_gripper_state_array[1]]
+                        left_hand_action = [dual_gripper_action_array[0]]
+                        right_hand_action = [dual_gripper_action_array[1]]
+                        current_body_state = []
+                        current_body_action = []
+                elif args.ee == "crt" and args.input_mode == "controller":
+                    with dual_gripper_data_lock:
+                        left_ee_state = [dual_gripper_state_array[0]]
+                        right_ee_state = [dual_gripper_state_array[1]]
+                        left_hand_action = [dual_gripper_action_array[0]]
+                        right_hand_action = [dual_gripper_action_array[1]]
+                        current_body_state = arm_ctrl.get_current_motor_q().tolist()
+                        current_body_action = [-tele_data.left_ctrl_thumbstickValue[1]  * 0.3,
+                                               -tele_data.left_ctrl_thumbstickValue[0]  * 0.3,
+                                               -tele_data.right_ctrl_thumbstickValue[0] * 0.3]
                 else:
                     left_ee_state = []
                     right_ee_state = []
